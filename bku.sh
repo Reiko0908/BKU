@@ -63,7 +63,7 @@ elif [[ "$ACTION" = "status" ]]; then
     fi
 
     dif=$(diff -u .bku/backup/$file $file | tail -n +3)
-    if [[ -z dif ]]; then
+    if [[ -z "dif" ]]; then
       echo "$file: No changes"
     else
       echo "$file:"
@@ -95,7 +95,7 @@ elif [[ "$ACTION" = "commit" ]]; then
   changed_files=()
   commit_file() {
     local file="$1"
-    [[ -f "$file"]] || return
+    [[ -f "$file" ]] || return
     dif=$(diff -u .bku/backup/$file $file | tail -n +3)
     if [[ -n "$dif" ]]; then
       if [[ -f ".bku/backup/$file" ]]; then
@@ -138,9 +138,88 @@ elif [[ "$ACTION" = "restore" ]]; then
     exit 1
   fi
 
-  has_restored=0
-  restore_file {
-    local 
+  has_restored=0; update_history=0
+  restore_file() {
+    local file="$1"
+    if [[ -f ".bku/backup/$file.patch" ]]; then
+      patch -R -s --no-backup-if-mismatch "$file" < ".bku/backup/$file.patch" >/dev/null 2>&1
+      if [[ $? -ne 0 ]]; then
+        cp ".bku/backup/$file" "$file"
+        rm -f "$file.rej"
+        echo "Error: Restored $file to latest committed version."
+        has_restored=1
+        return
+      fi      
+      echo "Restored $file to its previous version."
+      has_restored=1
+      update_history=1
+      return
+    else
+      echo "Error: No previous version available for $file."
+    fi
   }
-fi
+  
+  if [[ -z "$PARAM1" ]]; then
+    while read -r line; do
+      [[ -f "$line" ]] && restore_file "$line"
+    done < .bku/tracked_files.txt
+  else
+    file="${PARAM1#./}"
+    if ! grep -Fxq "$file" .bku/tracked_files.txt; then
+      echo "Error: $file is not tracked."
+      exit 1
+    fi
+    restore_file "$file"
+  fi
+  if [[ $has_restored -eq 0 ]]; then
+    echo "Error: No file to be restored."
+    exit 1
+  fi
+  if [[ $update_history -eq 1 ]]; then
+    sed -i '$d' .bku/history.log
+  fi
 
+# ==== SCHEDULE ====
+elif [[ "$ACTION" = "schedule" ]]; then
+  if [[ -z "$PARAM1" ]]; then
+    echo "Error: Invalid schedule option."
+    exit 1
+  fi
+  SCRIPT_PATH="$(realpath "$0")"
+  (crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH commit \"Scheduled backup\"") | crontab -
+  case "$PARAM1" in
+    --daily)
+      (crontab -l 2>/dev/null; echo "0 0 * * * cd $PWD && bash $SCRIPT_PATH commit \"Scheduled backup\"") | crontab -
+      echo "Scheduled daily backups at daily."
+      ;;
+
+    --hourly)
+      (crontab -l 2>/dev/null; echo "0 * * * * cd $PWD && bash $SCRIPT_PATH commit \"Scheduled backup\"") | crontab -
+      echo "Scheduled hourly backups at hourly."
+      ;;
+
+    --weekly)
+      (crontab -l 2>/dev/null; echo "0 0 * * 1 cd $PWD && bash $SCRIPT_PATH commit \"Scheduled backup\"") | crontab -
+      echo "Scheduled weekly backups at weekly."
+      ;;
+
+    --off)
+      echo "Backup scheduling disabled."
+      ;;
+
+    *)
+      echo "Error: Invalid schedule option."
+      exit 1
+      ;;
+  esac
+# ==== STOP ====
+elif [[ "$ACTION" = "stop" ]]; then
+  if [[ ! -d ".bku" ]]; then
+    echo "Error: No backup system to be removed."
+    exit 1
+  fi
+  SCRIPT_PATH="$(realpath "$0")"
+  (crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH commit \"Scheduled backup\"") | crontab -
+  rm -rf .bku
+  echo "Backup system removed."
+fi
